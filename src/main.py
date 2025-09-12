@@ -1,26 +1,24 @@
 # src/main.py
 import os
-
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.exc import SQLAlchemyError
 
 # ------------------------------------------------------------------------------
 # App + Config
 # ------------------------------------------------------------------------------
 app = Flask(__name__, static_folder="static", static_url_path="/")
 
-# CORS: allow all for now (tighten later to your Vercel domain if you want)
+# Allow all origins for now (tighten later to your Vercel domain if you prefer)
 CORS(app, resources={r"/api/*": {"origins": "*"}, r"/health": {"origins": "*"}})
 
-# Database config:
-# Prefer DATABASE_URL (e.g., Railway Postgres). Fallback to writable SQLite in /tmp.
-DB_URL = os.environ.get("DATABASE_URL", "").strip()
+# Database config: prefer DATABASE_URL; else writable SQLite in /tmp
+DB_URL = (os.environ.get("DATABASE_URL") or "").strip()
 if DB_URL.startswith("postgres://"):
     DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
 if not DB_URL:
-    # Always writable in container
-    DB_URL = "sqlite:////tmp/metier.db"
+    DB_URL = "sqlite:////tmp/metier.db"  # always writable in containers
 
 app.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -29,28 +27,26 @@ db = SQLAlchemy(app)
 
 # ------------------------------------------------------------------------------
 # Models import (so metadata is known before create_all)
-# NOTE: These imports are inside try blocks to avoid hard crashes
-# if a module name or symbol differs. Adjust names if your blueprints differ.
+# Adjust these imports to match your repo structure if needed
 # ------------------------------------------------------------------------------
 try:
-    # If your models reference `db` from main.py, importing after `db` is defined is important.
     from models.product import Product  # noqa: F401
     from models.order import Order      # noqa: F401
     from models.user import User        # noqa: F401
 except Exception as e:
-    # Log to console; app will still start so you can see the error in logs
-    print(f"[warn] Could not import models: {e}")
+    print(f"[warn] Could not import one or more models: {e}")
 
-# Create tables safely
+# Create tables safely inside an app context
 with app.app_context():
     try:
         db.create_all()
+        print("[info] db.create_all() completed")
     except Exception as e:
         print(f"[warn] db.create_all() failed: {e}")
 
 # ------------------------------------------------------------------------------
-# Blueprint registration (register only if present)
-# Expecting product_bp, cart_bp, order_bp, user_bp, admin_bp in routes/*
+# Optional blueprint registration (register only if present)
+# Expects product_bp, cart_bp, order_bp, user_bp, admin_bp in routes/*
 # ------------------------------------------------------------------------------
 def _maybe_register(module_name: str, bp_name: str):
     try:
@@ -62,9 +58,8 @@ def _maybe_register(module_name: str, bp_name: str):
         else:
             print(f"[info] No blueprint named {bp_name} in routes.{module_name}")
     except Exception as e:
-        print(f"[warn] Could not register blueprint {module_name}.{bp_name}: {e}")
+        print(f"[info] Blueprint not registered ({module_name}.{bp_name}): {e}")
 
-# Try common blueprint names; adjust if yours are different
 _maybe_register("product", "product_bp")
 _maybe_register("cart", "cart_bp")
 _maybe_register("order", "order_bp")
@@ -83,9 +78,25 @@ def root():
     return jsonify(status="ok", service="metier-backend"), 200
 
 # ------------------------------------------------------------------------------
-# Entrypoint
+# Fallback Products API (works even if blueprints aren't wired yet)
+# ------------------------------------------------------------------------------
+def _model_to_dict(m):
+    return {c.name: getattr(m, c.name) for c in m.__table__.columns}
+
+@app.get("/api/products")
+def api_products():
+    try:
+        # Limit to something sane for a simple smoke test
+        items = Product.query.limit(50).all()
+        return jsonify([_model_to_dict(p) for p in items]), 200
+    except SQLAlchemyError as e:
+        return jsonify(error=type(e).__name__, message=str(e)), 500
+    except Exception as e:
+        return jsonify(error="ServerError", message=str(e)), 500
+
+# ------------------------------------------------------------------------------
+# Entrypoint (bind to Railway's PORT)
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    # Listen on all interfaces so Railway can reach it
     app.run(host="0.0.0.0", port=port)
