@@ -6,15 +6,10 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-# ------------------------------------------------------------------------------
-# App & CORS
-# ------------------------------------------------------------------------------
 app = Flask(__name__, static_folder="static", static_url_path="/")
 CORS(app, resources={r"/api/*": {"origins": "*"}, r"/health": {"origins": "*"}})
 
-# ------------------------------------------------------------------------------
-# Database config (SQLite in /tmp by default; works on Railway)
-# ------------------------------------------------------------------------------
+# ---- DB config
 DB_URL = (os.environ.get("DATABASE_URL") or "").strip()
 if DB_URL.startswith("postgres://"):
     DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
@@ -25,13 +20,10 @@ app.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
-
-# Expose db under current_app.extensions["sqlalchemy"].db for blueprints
+# expose db for blueprints using current_app.extensions["sqlalchemy"].db
 app.extensions["sqlalchemy"].db = db  # type: ignore[attr-defined]
 
-# ------------------------------------------------------------------------------
-# Bootstrap products table (simple schema for MVP)
-# ------------------------------------------------------------------------------
+# ---- products table bootstrap
 CREATE_PRODUCTS_SQL = """
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,21 +35,15 @@ CREATE TABLE IF NOT EXISTS products (
   description TEXT
 );
 """
-
 def ensure_products_table():
     db.session.execute(text(CREATE_PRODUCTS_SQL))
     db.session.commit()
 
 with app.app_context():
-    try:
-        ensure_products_table()
-        print("[info] products table ready")
-    except Exception as e:
-        print(f"[warn] ensure_products_table failed: {e}")
+    ensure_products_table()
+    print("[info] products table ready")
 
-# ------------------------------------------------------------------------------
-# Register admin blueprint explicitly
-# ------------------------------------------------------------------------------
+# ---- register admin blueprint explicitly
 try:
     from routes.admin import admin_bp
     app.register_blueprint(admin_bp)
@@ -65,9 +51,7 @@ try:
 except Exception as e:
     print(f"[warn] Failed to register admin blueprint: {e}")
 
-# ------------------------------------------------------------------------------
-# Health & Root
-# ------------------------------------------------------------------------------
+# ---- health & root
 @app.get("/health")
 def health():
     return jsonify(ok=True), 200
@@ -76,9 +60,7 @@ def health():
 def root():
     return jsonify(status="ok", service="metier-backend"), 200
 
-# ------------------------------------------------------------------------------
-# Products list (supports ?search=, ?category=, ?limit=)
-# ------------------------------------------------------------------------------
+# ---- products list
 @app.get("/api/products")
 def api_products():
     try:
@@ -88,9 +70,7 @@ def api_products():
 
         clauses, params = [], {}
         if search:
-            clauses.append(
-                "(LOWER(name) LIKE :q OR LOWER(sku) LIKE :q OR LOWER(category) LIKE :q)"
-            )
+            clauses.append("(LOWER(name) LIKE :q OR LOWER(sku) LIKE :q OR LOWER(category) LIKE :q)")
             params["q"] = f"%{search.lower()}%"
         if category:
             clauses.append("LOWER(category) = :cat")
@@ -98,11 +78,10 @@ def api_products():
 
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = text(
-            f"SELECT id, name, sku, category, price, image_url, description "
+            "SELECT id, name, sku, category, price, image_url, description "
             f"FROM products {where_sql} ORDER BY id DESC LIMIT :lim"
         )
         params["lim"] = limit
-
         rows = db.session.execute(sql, params).mappings().all()
         return jsonify([dict(r) for r in rows]), 200
     except SQLAlchemyError as e:
@@ -110,9 +89,7 @@ def api_products():
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
 
-# ------------------------------------------------------------------------------
-# Optional seed endpoint (adds a couple demo items)
-# ------------------------------------------------------------------------------
+# ---- optional seed
 @app.post("/api/seed")
 def api_seed():
     try:
@@ -139,7 +116,6 @@ def api_seed():
                 "description": "High-efficiency core with mandrel-bent piping."
             }
         ]
-
         ins = text("""
             INSERT INTO products (name, sku, category, price, image_url, description)
             VALUES (:name, :sku, :category, :price, :image_url, :description)
@@ -147,7 +123,6 @@ def api_seed():
         for p in sample:
             db.session.execute(ins, p)
         db.session.commit()
-
         return jsonify(message="Seeded", inserted=len(sample)), 201
     except SQLAlchemyError as e:
         db.session.rollback()
@@ -155,22 +130,17 @@ def api_seed():
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
 
-# ------------------------------------------------------------------------------
-# Debug: list all registered routes (remove later)
-# ------------------------------------------------------------------------------
+# ---- debug: list all routes (remove later)
 @app.get("/__routes")
 def list_routes():
     out = []
     for rule in app.url_map.iter_rules():
-        methods = ",".join(sorted(m for m in rule.methods if m not in {"HEAD", "OPTIONS"}))
+        methods = ",".join(sorted(m for m in rule.methods if m not in {"HEAD","OPTIONS"}))
         out.append({"rule": str(rule), "methods": methods})
     return jsonify(out), 200
 
-# ------------------------------------------------------------------------------
-# Entrypoint
-# ------------------------------------------------------------------------------
+# ---- entrypoint
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    print(f"[info] starting server on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
-Make sure you also have a file src/routes/__init__.py (can be empty). That makes routes a proper package so from routes.admin import admin_bp works.
-
