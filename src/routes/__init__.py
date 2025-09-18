@@ -1,1 +1,1 @@
-# makes 'routes' a package so imports like routes.admin work
+# makes 'routes' a package so 'from routes.admin import admin_bp' works
