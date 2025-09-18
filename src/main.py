@@ -1,54 +1,72 @@
 # src/main.py
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 # ------------------------------------------------------------------------------
-# App + Config
+# App & CORS
 # ------------------------------------------------------------------------------
 app = Flask(__name__, static_folder="static", static_url_path="/")
-
-# Allow all origins for now (tighten later to your Vercel domain if you prefer)
 CORS(app, resources={r"/api/*": {"origins": "*"}, r"/health": {"origins": "*"}})
 
-# Database config: prefer DATABASE_URL; else writable SQLite in /tmp
+# ------------------------------------------------------------------------------
+# Database config (SQLite in /tmp by default; works on Railway)
+# ------------------------------------------------------------------------------
 DB_URL = (os.environ.get("DATABASE_URL") or "").strip()
 if DB_URL.startswith("postgres://"):
     DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
 if not DB_URL:
-    DB_URL = "sqlite:////tmp/metier.db"  # always writable in containers
+    DB_URL = "sqlite:////tmp/metier.db"
 
 app.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# ------------------------------------------------------------------------------
-# Optional: try to import models so db.create_all() can create tables if defined
-# If imports fail (circular import, path differences, etc.), we keep running.
-# ------------------------------------------------------------------------------
-try:
-    # If your model modules exist, import them so metadata is registered
-    import models.product  # noqa: F401
-    import models.order    # noqa: F401
-    import models.user     # noqa: F401
-    print("[info] models imported for create_all()")
-except Exception as e:
-    print(f"[warn] could not import models (continuing without): {e}")
+# Expose db under current_app.extensions["sqlalchemy"].db for blueprints
+app.extensions["sqlalchemy"].db = db  # type: ignore[attr-defined]
 
-# Create tables (if models were successfully imported)
+# ------------------------------------------------------------------------------
+# Bootstrap products table (simple schema for MVP)
+# ------------------------------------------------------------------------------
+CREATE_PRODUCTS_SQL = """
+CREATE TABLE IF NOT EXISTS products (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  sku TEXT,
+  category TEXT,
+  price REAL DEFAULT 0,
+  image_url TEXT,
+  description TEXT
+);
+"""
+
+def ensure_products_table():
+    db.session.execute(text(CREATE_PRODUCTS_SQL))
+    db.session.commit()
+
 with app.app_context():
     try:
-        db.create_all()
-        print("[info] db.create_all() completed (if models present)")
+        ensure_products_table()
+        print("[info] products table ready")
     except Exception as e:
-        print(f"[warn] db.create_all() failed (continuing): {e}")
+        print(f"[warn] ensure_products_table failed: {e}")
 
 # ------------------------------------------------------------------------------
-# Health + Root
+# Register admin blueprint explicitly
+# ------------------------------------------------------------------------------
+try:
+    from routes.admin import admin_bp
+    app.register_blueprint(admin_bp)
+    print("[info] Registered admin blueprint")
+except Exception as e:
+    print(f"[warn] Failed to register admin blueprint: {e}")
+
+# ------------------------------------------------------------------------------
+# Health & Root
 # ------------------------------------------------------------------------------
 @app.get("/health")
 def health():
@@ -59,29 +77,100 @@ def root():
     return jsonify(status="ok", service="metier-backend"), 200
 
 # ------------------------------------------------------------------------------
-# Fallback Products API (works even if blueprints/models aren't wired yet)
-# - Tries to read from a table named `products` using a safe text query.
-# - If the table doesn't exist yet, returns [].
+# Products list (supports ?search=, ?category=, ?limit=)
 # ------------------------------------------------------------------------------
 @app.get("/api/products")
 def api_products():
     try:
-        # Try to fetch some columns commonly present; fall back to SELECT * if needed
-        sql = text("SELECT * FROM products LIMIT 50")
-        rows = db.session.execute(sql).mappings().all()  # mappings() => dict-like rows
+        search = (request.args.get("search") or "").strip()
+        category = (request.args.get("category") or "").strip()
+        limit = int(request.args.get("limit") or 50)
+
+        clauses, params = [], {}
+        if search:
+            clauses.append(
+                "(LOWER(name) LIKE :q OR LOWER(sku) LIKE :q OR LOWER(category) LIKE :q)"
+            )
+            params["q"] = f"%{search.lower()}%"
+        if category:
+            clauses.append("LOWER(category) = :cat")
+            params["cat"] = category.lower()
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = text(
+            f"SELECT id, name, sku, category, price, image_url, description "
+            f"FROM products {where_sql} ORDER BY id DESC LIMIT :lim"
+        )
+        params["lim"] = limit
+
+        rows = db.session.execute(sql, params).mappings().all()
         return jsonify([dict(r) for r in rows]), 200
     except SQLAlchemyError as e:
-        msg = str(e)
-        # If products table doesn't exist yet, just return empty list so the app works
-        if "no such table" in msg or "relation \"products\" does not exist" in msg:
-            return jsonify([]), 200
-        return jsonify(error=type(e).__name__, message=msg), 500
+        return jsonify(error=type(e).__name__, message=str(e)), 500
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
 
 # ------------------------------------------------------------------------------
-# Entrypoint (bind to Railway's PORT)
+# Optional seed endpoint (adds a couple demo items)
+# ------------------------------------------------------------------------------
+@app.post("/api/seed")
+def api_seed():
+    try:
+        ensure_products_table()
+        count = db.session.execute(text("SELECT COUNT(*) AS c FROM products")).scalar_one()
+        if count and count > 0:
+            return jsonify(message="Already seeded", count=int(count)), 200
+
+        sample = [
+            {
+                "name": "GTX 2867R Turbocharger",
+                "sku": "MET-7811",
+                "category": "Turbochargers",
+                "price": 1299.00,
+                "image_url": "https://images.unsplash.com/photo-1542365887-6dd6fc8f9f0e?q=80&w=1600&auto=format&fit=crop",
+                "description": "Dual ball-bearing turbo for responsive street builds."
+            },
+            {
+                "name": "Front-Mount Intercooler Kit",
+                "sku": "MET-FMIC-900",
+                "category": "Intercoolers",
+                "price": 899.00,
+                "image_url": "https://images.unsplash.com/photo-1587440871875-191322ee64b0?q=80&w=1600&auto=format&fit=crop",
+                "description": "High-efficiency core with mandrel-bent piping."
+            }
+        ]
+
+        ins = text("""
+            INSERT INTO products (name, sku, category, price, image_url, description)
+            VALUES (:name, :sku, :category, :price, :image_url, :description)
+        """)
+        for p in sample:
+            db.session.execute(ins, p)
+        db.session.commit()
+
+        return jsonify(message="Seeded", inserted=len(sample)), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        return jsonify(error=type(e).__name__, message=str(e)), 500
+    except Exception as e:
+        return jsonify(error="ServerError", message=str(e)), 500
+
+# ------------------------------------------------------------------------------
+# Debug: list all registered routes (remove later)
+# ------------------------------------------------------------------------------
+@app.get("/__routes")
+def list_routes():
+    out = []
+    for rule in app.url_map.iter_rules():
+        methods = ",".join(sorted(m for m in rule.methods if m not in {"HEAD", "OPTIONS"}))
+        out.append({"rule": str(rule), "methods": methods})
+    return jsonify(out), 200
+
+# ------------------------------------------------------------------------------
+# Entrypoint
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+Make sure you also have a file src/routes/__init__.py (can be empty). That makes routes a proper package so from routes.admin import admin_bp works.
+
