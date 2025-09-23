@@ -1,4 +1,9 @@
 # src/main.py 
+
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + '/..'))
+
+
 import os
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
