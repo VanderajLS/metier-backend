@@ -7,8 +7,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.utils import secure_filename
 import boto3
+from datetime import datetime
 
-admin_bp = Blueprint("admin", url_prefix="/api/admin")
+# ------------------------------------------------------------------------------
+# Blueprint
+# ------------------------------------------------------------------------------
+# FIX: Added __name__ as required second argument
+admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
 # ------------------------------------------------------------------------------
 # R2 helpers (accept both R2_BUCKET_NAME and R2_BUCKET for compatibility)
@@ -67,18 +72,21 @@ def _insert_product(p: Dict[str, Any]) -> int:
 # ------------------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------------------
+
 @admin_bp.route("/ping")
 def ping():
     return jsonify(ok=True, where="admin")
 
 @admin_bp.post("/images/presign")
 def presign_image():
+    """Generate a presigned URL for uploading directly to R2."""
     try:
         data = request.get_json(force=True) or {}
         file_name = data.get("fileName")
         content_type = data.get("contentType", "application/octet-stream")
         folder = data.get("folder", "").strip()
-        key = f"{folder}/{file_name}" if folder else file_name
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        key = f"{folder}/{timestamp}_{file_name}" if folder else f"{timestamp}_{file_name}"
 
         presigned = s3.generate_presigned_post(
             Bucket=R2_BUCKET_NAME,
