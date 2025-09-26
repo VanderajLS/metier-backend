@@ -1,93 +1,98 @@
-from flask import Blueprint, request, jsonify, current_app
+# src/routes/admin.py
+from __future__ import annotations
 import os
-import boto3
-from datetime import datetime
+from typing import Dict, Any
+from flask import Blueprint, jsonify, request, current_app
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.utils import secure_filename
-
-admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
-
-# ---------- R2 Presigned Upload ----------
-@admin_bp.route("/images/presign", methods=["POST"])
-def generate_presigned_post():
-    try:
-        data = request.get_json(force=True)
-        file_name = data["fileName"]
-        content_type = data["contentType"]
-        folder = data.get("folder", "uploads")
-
-        # Generate object key (path)
-        key = f"{folder}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file_name}"
-
-        # Use R2 config from env
-        r2 = boto3.client(
-            "s3",
-            endpoint_url=os.environ["R2_ENDPOINT"],
-            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-        )
-
-        presigned_post = r2.generate_presigned_post(
-            Bucket=os.environ["R2_BUCKET_NAME"],
-            Key=key,
-            Fields={"Content-Type": content_type},
-            Conditions=[{"Content-Type": content_type}],
-            ExpiresIn=3600,
-        )
-
-        return jsonify({
-            "url": presigned_post["url"],
-            "fields": presigned_post["fields"],
-            "public_url": f"{os.environ['R2_PUBLIC_BASE'].rstrip('/')}/{key}"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ---------- Dummy Admin Ping ----------
-@admin_bp.route("/ping")
-def ping():
-    return jsonify(ok=True, where="admin")
-
 import boto3
-from datetime import datetime
 
-# Ensure these env vars are set in Railway
+admin_bp = Blueprint("admin", url_prefix="/api/admin")
+
+# ------------------------------------------------------------------------------
+# R2 helpers (accept both R2_BUCKET_NAME and R2_BUCKET for compatibility)
+# ------------------------------------------------------------------------------
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET")
+R2_ENDPOINT = os.getenv("R2_ENDPOINT", "").rstrip("/")
+R2_PUBLIC_BASE = os.getenv("R2_PUBLIC_BASE", "").rstrip("/")
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
-R2_ENDPOINT = os.getenv("R2_ENDPOINT")
-R2_PUBLIC_BASE = os.getenv("R2_PUBLIC_BASE")
 
-r2_client = boto3.client(
+s3 = boto3.client(
     "s3",
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
 )
 
-@admin_bp.route("/images/presign", methods=["POST"])
-def generate_presigned_post():
+# ------------------------------------------------------------------------------
+# DB helpers
+# ------------------------------------------------------------------------------
+def _ensure_products_table():
+    sql = """
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      sku TEXT,
+      category TEXT,
+      price REAL DEFAULT 0,
+      image_url TEXT,
+      description TEXT
+    );
+    """
+    db = current_app.extensions["sqlalchemy"].db
+    db.session.execute(text(sql))
+    db.session.commit()
+
+def _insert_product(p: Dict[str, Any]) -> int:
+    _ensure_products_table()
+    ins = text("""
+      INSERT INTO products (name, sku, category, price, image_url, description)
+      VALUES (:name, :sku, :category, :price, :image_url, :description)
+    """)
+    db = current_app.extensions["sqlalchemy"].db
+    db.session.execute(ins, {
+        "name": p.get("name", "").strip(),
+        "sku": (p.get("sku") or "").strip(),
+        "category": (p.get("category") or "").strip(),
+        "price": float(p.get("price") or 0),
+        "image_url": (p.get("image_url") or "").strip(),
+        "description": (p.get("description") or "").strip(),
+    })
+    db.session.commit()
+    row_id = db.session.execute(text("SELECT last_insert_rowid()")).scalar_one()
+    return int(row_id)
+
+# ------------------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------------------
+@admin_bp.route("/ping")
+def ping():
+    return jsonify(ok=True, where="admin")
+
+@admin_bp.post("/images/presign")
+def presign_image():
     try:
-        data = request.get_json()
-        file_name = data["fileName"]
-        content_type = data["contentType"]
-        folder = data.get("folder", "uploads")
+        data = request.get_json(force=True) or {}
+        file_name = data.get("fileName")
+        content_type = data.get("contentType", "application/octet-stream")
+        folder = data.get("folder", "").strip()
+        key = f"{folder}/{file_name}" if folder else file_name
 
-        key = f"{folder}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file_name}"
-
-        presigned_post = r2_client.generate_presigned_post(
+        presigned = s3.generate_presigned_post(
             Bucket=R2_BUCKET_NAME,
             Key=key,
             Fields={"Content-Type": content_type},
             Conditions=[{"Content-Type": content_type}],
             ExpiresIn=3600,
         )
+        public_url = f"{R2_PUBLIC_BASE}/{key}" if R2_PUBLIC_BASE else None
 
         return jsonify({
-            "url": presigned_post["url"],
-            "fields": presigned_post["fields"],
-            "public_url": f"{R2_PUBLIC_BASE}/{key}"
+            "url": presigned["url"],
+            "fields": presigned["fields"],
+            "public_url": public_url
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify(error="ServerError", message=str(e)), 500
