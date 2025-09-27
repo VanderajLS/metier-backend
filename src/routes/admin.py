@@ -12,7 +12,7 @@ from datetime import datetime
 # ------------------------------------------------------------------------------
 # Blueprint
 # ------------------------------------------------------------------------------
-# FIX: Added __name__ as required second argument
+# FIX: __name__ added as the second required argument
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
 # ------------------------------------------------------------------------------
@@ -72,7 +72,6 @@ def _insert_product(p: Dict[str, Any]) -> int:
 # ------------------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------------------
-
 @admin_bp.route("/ping")
 def ping():
     return jsonify(ok=True, where="admin")
