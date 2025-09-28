@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 from typing import Dict, Any
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import boto3
@@ -9,6 +9,9 @@ from botocore.config import Config
 from datetime import datetime
 from urllib.parse import urlparse
 import traceback
+
+# Import db from main.py
+from src.main import db
 
 # ------------------------------------------------------------------------------
 # Blueprint
@@ -60,7 +63,6 @@ def _ensure_products_table():
           description TEXT
         );
         """
-        db = current_app.extensions["sqlalchemy"].db
         db.session.execute(text(sql))
         db.session.commit()
     except Exception as e:
@@ -74,7 +76,6 @@ def _insert_product(p: Dict[str, Any]) -> int:
       INSERT INTO products (name, sku, category, price, image_url, description)
       VALUES (:name, :sku, :category, :price, :image_url, :description)
     """)
-    db = current_app.extensions["sqlalchemy"].db
     db.session.execute(ins, {
         "name": p.get("name", "").strip(),
         "sku": (p.get("sku") or "").strip(),
@@ -133,7 +134,7 @@ def create_product():
         new_id = _insert_product(data)
         return jsonify({"id": new_id}), 201
     except SQLAlchemyError as e:
-        current_app.extensions["sqlalchemy"].db.session.rollback()
+        db.session.rollback()
         traceback.print_exc()
         return jsonify(error=type(e).__name__, message=str(e)), 500
     except Exception as e:
@@ -145,7 +146,6 @@ def list_products_admin():
     """List products (admin route)."""
     try:
         _ensure_products_table()
-        db = current_app.extensions["sqlalchemy"].db
         rows = db.session.execute(
             text("SELECT * FROM products ORDER BY id DESC")
         ).mappings().all()
@@ -160,7 +160,6 @@ def list_products_public():
     """Public list of products for catalog page."""
     try:
         _ensure_products_table()
-        db = current_app.extensions["sqlalchemy"].db
         rows = db.session.execute(
             text("SELECT * FROM products ORDER BY id DESC")
         ).mappings().all()
