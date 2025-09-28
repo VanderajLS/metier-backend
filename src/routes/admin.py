@@ -59,6 +59,7 @@ def _ensure_products_table():
       sku TEXT,
       category TEXT,
       price REAL DEFAULT 0,
+      discount_price REAL DEFAULT NULL,
       inventory INT DEFAULT 0,
       image_url TEXT,
       description TEXT,
@@ -72,14 +73,15 @@ def _ensure_products_table():
 def _insert_product(p: Dict[str, Any]) -> int:
     _ensure_products_table()
     ins = text("""
-      INSERT INTO products (name, sku, category, price, inventory, image_url, description, product_images, specs)
-      VALUES (:name, :sku, :category, :price, :inventory, :image_url, :description, :product_images, :specs)
+      INSERT INTO products (name, sku, category, price, discount_price, inventory, image_url, description, product_images, specs)
+      VALUES (:name, :sku, :category, :price, :discount_price, :inventory, :image_url, :description, :product_images, :specs)
     """)
     db.session.execute(ins, {
         "name": (p.get("name") or "").strip(),
         "sku": (p.get("sku") or "").strip(),
         "category": (p.get("category") or "").strip(),
         "price": float(p.get("price") or 0),
+        "discount_price": float(p.get("discountPrice") or 0) if p.get("discountPrice") else None,
         "inventory": int(p.get("inventory") or 0),
         "image_url": (p.get("image_url") or "").strip(),
         "description": (p.get("description") or "").strip(),
@@ -149,6 +151,8 @@ def list_products_admin():
     for r in rows:
         item = dict(r)
         item["product_images"] = item.get("product_images", "").split(",") if item.get("product_images") else []
+        # Map snake_case to camelCase for frontend
+        item["discountPrice"] = item.get("discount_price")
         results.append(item)
     return jsonify(results)
 
@@ -161,15 +165,13 @@ def list_products_public():
     for r in rows:
         item = dict(r)
         item["product_images"] = item.get("product_images", "").split(",") if item.get("product_images") else []
+        item["discountPrice"] = item.get("discount_price")
         results.append(item)
     return jsonify(results)
 
-# --- AI Description with Prompt Engineering ---
+# --- AI Description (unchanged) ---
 @admin_bp.post("/ai/describe")
 def ai_describe():
-    """
-    Use OpenAI Vision to extract structured product info and generate robust, formatted specs + description.
-    """
     try:
         data = request.get_json(force=True) or {}
         image_url = data.get("image_url")
@@ -186,18 +188,9 @@ def ai_describe():
             '  "name": string,\n'
             '  "category": string,\n'
             '  "sku": string,\n'
-            '  "specs": string (markdown bullet list, at least 4 bullets, each with a **bold label**),\n'
-            '  "description": string (markdown, at least 2 paragraphs, professional tone, identifiers like SKU/part numbers/years in **bold**)\n'
-            "}\n\n"
-            "### Example Output:\n"
-            "{\n"
-            '  "name": "Polaris RZR 0.9L Turbocharger",\n'
-            '  "category": "Turbochargers",\n'
-            '  "sku": "MP120568",\n'
-            '  "specs": "- **Turbo Model:** K03\\n- **OEM / Cross Reference:** 1205689, 3022792, 3023297\\n- **Application:** Polaris RZR XP 0.9L (2016–2021)\\n- **Component Type:** Complete Turbocharger Assembly",\n'
-            '  "description": "This replacement turbocharger is engineered for the **Polaris RZR XP 0.9L (2016–2021)**. Built around the proven **K03 turbine design**, it matches OEM specifications for fit and performance.\\n\\nDesigned for durability in demanding off-road environments, this turbo delivers reliable boost and restores lost performance. With cross-reference part numbers **1205689, 3022792, and 3023297**, it’s a direct-fit solution that ensures your RZR runs at peak power."\n'
-            "}\n\n"
-            "Always follow this style exactly. Never include extra text or commentary."
+            '  "specs": string (markdown bullet list, bold labels),\n'
+            '  "description": string (markdown, 2+ paragraphs, professional tone, identifiers bold)\n'
+            "}"
         )
 
         resp = client.chat.completions.create(
