@@ -5,20 +5,14 @@ from typing import Dict, Any
 from flask import Blueprint, jsonify, request, current_app
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from werkzeug.utils import secure_filename
 import boto3
 from botocore.config import Config
 from datetime import datetime
 from urllib.parse import urlparse
 
-# ------------------------------------------------------------------------------
-# Blueprint
-# ------------------------------------------------------------------------------
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
-# ------------------------------------------------------------------------------
-# R2 helpers
-# ------------------------------------------------------------------------------
+# --- R2 config ---
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET")
 R2_ENDPOINT = os.getenv("R2_ENDPOINT", "").rstrip("/")
 R2_PUBLIC_BASE = os.getenv("R2_PUBLIC_BASE", "").rstrip("/")
@@ -30,13 +24,10 @@ s3 = boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-    config=Config(signature_version="s3v4")  # Force SigV4
+    config=Config(signature_version="s3v4")
 )
 
 def _normalize_public_base(base: str, key: str) -> str:
-    """
-    Ensure public URL base doesn't include bucket name or duplicate slashes.
-    """
     if not base:
         return None
     parsed = urlparse(base)
@@ -48,9 +39,7 @@ def _normalize_public_base(base: str, key: str) -> str:
         root = f"{root}/{clean_path}"
     return f"{root}/{key}"
 
-# ------------------------------------------------------------------------------
-# DB helpers
-# ------------------------------------------------------------------------------
+# --- DB helpers ---
 def _ensure_products_table():
     sql = """
     CREATE TABLE IF NOT EXISTS products (
@@ -86,9 +75,7 @@ def _insert_product(p: Dict[str, Any]) -> int:
     row_id = db.session.execute(text("SELECT last_insert_rowid()")).scalar_one()
     return int(row_id)
 
-# ------------------------------------------------------------------------------
-# Routes
-# ------------------------------------------------------------------------------
+# --- Routes ---
 @admin_bp.route("/ping")
 def ping():
     return jsonify(ok=True, where="admin")
@@ -122,7 +109,7 @@ def presign_image():
 
 @admin_bp.post("/products")
 def create_product():
-    """Create product from JSON; auto-generate description if missing."""
+    """Create product from JSON."""
     try:
         data = request.get_json(force=True) or {}
         name = (data.get("name") or "").strip()
@@ -136,10 +123,23 @@ def create_product():
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
 
-# ✅ New: Public GET route for products
 @admin_bp.get("/products")
-def list_products():
-    """List all products (public catalog)."""
+def list_products_admin():
+    """List products (admin route)."""
+    try:
+        _ensure_products_table()
+        db = current_app.extensions["sqlalchemy"].db
+        rows = db.session.execute(
+            text("SELECT * FROM products ORDER BY id DESC")
+        ).mappings().all()
+        return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        return jsonify(error="ServerError", message=str(e)), 500
+
+# ✅ Public route for Products page
+@current_app.route("/api/products", methods=["GET"])
+def list_products_public():
+    """Public list of products for catalog page."""
     try:
         _ensure_products_table()
         db = current_app.extensions["sqlalchemy"].db
