@@ -1,59 +1,41 @@
-# src/main.py
 import os
-from flask import Flask, jsonify, send_from_directory
-from flask_cors import CORS
+from flask import Flask, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from src.routes.admin import admin_bp  # your admin blueprint
-import boto3
+from flask_cors import CORS
 
-# ------------------------------------------------------------------------------
-# App setup
-# ------------------------------------------------------------------------------
-app = Flask(__name__, static_folder="static", static_url_path="")
+# Initialize Flask
+app = Flask(__name__)
 CORS(app)
 
-# ------------------------------------------------------------------------------
-# Database setup
-# ------------------------------------------------------------------------------
-db_path = os.getenv("DATABASE_URL", "sqlite:///metier_cx.db")
-app.config["SQLALCHEMY_DATABASE_URI"] = db_path
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
+# -------------------------------
+# Database config (Postgres + SQLite fallback)
+# -------------------------------
+if os.environ.get("DATABASE_URL"):
+    # Railway often uses postgres://, SQLAlchemy with psycopg v3 expects postgresql+psycopg://
+    db_url = os.environ["DATABASE_URL"].replace("postgres://", "postgresql+psycopg://")
+    app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+else:
+    # Local fallback
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///metier_cx.db"
 
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
-# ------------------------------------------------------------------------------
-# Register blueprints
-# ------------------------------------------------------------------------------
+# -------------------------------
+# Blueprints
+# -------------------------------
+from src.routes.admin import admin_bp
 app.register_blueprint(admin_bp)
 
-# ------------------------------------------------------------------------------
-# Healthcheck
-# ------------------------------------------------------------------------------
+# -------------------------------
+# Health check
+# -------------------------------
 @app.route("/health")
 def health():
     return jsonify(ok=True)
 
-# ------------------------------------------------------------------------------
-# Serve frontend (static build if present)
-# ------------------------------------------------------------------------------
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def serve_frontend(path):
-    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
-        return send_from_directory(app.static_folder, path)
-    else:
-        index_path = os.path.join(app.static_folder, "index.html")
-        if os.path.exists(index_path):
-            return send_from_directory(app.static_folder, "index.html")
-        return "Frontend not built", 404
-
-# ------------------------------------------------------------------------------
-# Debug route listing
-# ------------------------------------------------------------------------------
-@app.route("/__routes")
-def list_routes():
-    routes = []
-    for rule in app.url_map.iter_rules():
-        routes.append({"rule": str(rule), "methods": ",".join(rule.methods)})
-    return jsonify(routes)
+# -------------------------------
+# Run
+# -------------------------------
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
