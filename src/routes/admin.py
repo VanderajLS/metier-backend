@@ -9,16 +9,14 @@ from botocore.config import Config
 from datetime import datetime
 from urllib.parse import urlparse
 import traceback
-
-# Import db from main.py
 from src.main import db
 from openai import OpenAI
+import json
 
 # ------------------------------------------------------------------------------
 # Setup
 # ------------------------------------------------------------------------------
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
-
 client = OpenAI()
 
 # ------------------------------------------------------------------------------
@@ -35,7 +33,7 @@ s3 = boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-    config=Config(signature_version="s3v4")  # Force SigV4
+    config=Config(signature_version="s3v4")
 )
 
 def _normalize_public_base(base: str, key: str) -> str:
@@ -54,32 +52,28 @@ def _normalize_public_base(base: str, key: str) -> str:
 # DB helpers
 # ------------------------------------------------------------------------------
 def _ensure_products_table():
-    try:
-        sql = """
-        CREATE TABLE IF NOT EXISTS products (
-          id SERIAL PRIMARY KEY,
-          name TEXT,
-          sku TEXT,
-          category TEXT,
-          price REAL DEFAULT 0,
-          inventory INT DEFAULT 0,
-          image_url TEXT,
-          description TEXT,
-          product_images TEXT
-        );
-        """
-        db.session.execute(text(sql))
-        db.session.commit()
-    except Exception as e:
-        print("DB ERROR in _ensure_products_table:", str(e))
-        traceback.print_exc()
-        raise
+    sql = """
+    CREATE TABLE IF NOT EXISTS products (
+      id SERIAL PRIMARY KEY,
+      name TEXT,
+      sku TEXT,
+      category TEXT,
+      price REAL DEFAULT 0,
+      inventory INT DEFAULT 0,
+      image_url TEXT,
+      description TEXT,
+      product_images TEXT,
+      specs TEXT
+    );
+    """
+    db.session.execute(text(sql))
+    db.session.commit()
 
 def _insert_product(p: Dict[str, Any]) -> int:
     _ensure_products_table()
     ins = text("""
-      INSERT INTO products (name, sku, category, price, inventory, image_url, description, product_images)
-      VALUES (:name, :sku, :category, :price, :inventory, :image_url, :description, :product_images)
+      INSERT INTO products (name, sku, category, price, inventory, image_url, description, product_images, specs)
+      VALUES (:name, :sku, :category, :price, :inventory, :image_url, :description, :product_images, :specs)
     """)
     db.session.execute(ins, {
         "name": (p.get("name") or "").strip(),
@@ -89,8 +83,8 @@ def _insert_product(p: Dict[str, Any]) -> int:
         "inventory": int(p.get("inventory") or 0),
         "image_url": (p.get("image_url") or "").strip(),
         "description": (p.get("description") or "").strip(),
-        # store list of product_images as comma-separated string
-        "product_images": ",".join(p.get("product_images", []))
+        "product_images": ",".join(p.get("product_images", [])),
+        "specs": (p.get("specs") or "").strip(),
     })
     db.session.commit()
     row_id = db.session.execute(text("SELECT lastval()")).scalar_one()
@@ -103,10 +97,8 @@ def _insert_product(p: Dict[str, Any]) -> int:
 def ping():
     return jsonify(ok=True, where="admin")
 
-# --- Image Presign ---
 @admin_bp.post("/images/presign")
 def presign_image():
-    """Generate a presigned PUT URL for uploading directly to R2."""
     try:
         data = request.get_json(force=True) or {}
         file_name = data.get("fileName")
@@ -132,10 +124,8 @@ def presign_image():
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
-# --- Create Product ---
 @admin_bp.post("/products")
 def create_product():
-    """Create product from JSON."""
     try:
         data = request.get_json(force=True) or {}
         new_id = _insert_product(data)
@@ -148,53 +138,31 @@ def create_product():
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
-# --- List Products (admin) ---
 @admin_bp.get("/products")
 def list_products_admin():
-    try:
-        _ensure_products_table()
-        rows = db.session.execute(
-            text("SELECT * FROM products ORDER BY id DESC")
-        ).mappings().all()
-        # expand product_images string into list
-        results = []
-        for r in rows:
-            item = dict(r)
-            if item.get("product_images"):
-                item["product_images"] = item["product_images"].split(",")
-            else:
-                item["product_images"] = []
-            results.append(item)
-        return jsonify(results)
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify(error="ServerError", message=str(e)), 500
+    _ensure_products_table()
+    rows = db.session.execute(text("SELECT * FROM products ORDER BY id DESC")).mappings().all()
+    results = []
+    for r in rows:
+        item = dict(r)
+        item["product_images"] = item.get("product_images", "").split(",") if item.get("product_images") else []
+        results.append(item)
+    return jsonify(results)
 
-# --- Public Catalog ---
 @admin_bp.get("/public")
 def list_products_public():
-    try:
-        _ensure_products_table()
-        rows = db.session.execute(
-            text("SELECT * FROM products ORDER BY id DESC")
-        ).mappings().all()
-        results = []
-        for r in rows:
-            item = dict(r)
-            if item.get("product_images"):
-                item["product_images"] = item["product_images"].split(",")
-            else:
-                item["product_images"] = []
-            results.append(item)
-        return jsonify(results)
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify(error="ServerError", message=str(e)), 500
+    _ensure_products_table()
+    rows = db.session.execute(text("SELECT * FROM products ORDER BY id DESC")).mappings().all()
+    results = []
+    for r in rows:
+        item = dict(r)
+        item["product_images"] = item.get("product_images", "").split(",") if item.get("product_images") else []
+        results.append(item)
+    return jsonify(results)
 
-# --- AI Description ---
 @admin_bp.post("/ai/describe")
 def ai_describe():
-    """Use OpenAI Vision to extract product info and generate description."""
+    """Use OpenAI Vision to extract structured product info + description."""
     try:
         data = request.get_json(force=True) or {}
         image_url = data.get("image_url")
@@ -204,39 +172,48 @@ def ai_describe():
         if not image_url:
             return jsonify(error="ValidationError", message="image_url is required"), 400
 
-        prompt = (
-            "You are analyzing a product description image. "
-            "Extract the following if available: product name, category, SKU, and specifications. "
-            "Then write a short, professional marketing description suitable for an e-commerce site."
+        system_prompt = (
+            "You analyze a product description/spec image and return ONLY valid JSON.\n"
+            "Schema:\n"
+            "{\n"
+            '  "name": string | null,\n'
+            '  "category": string | null,\n'
+            '  "sku": string | null,\n'
+            '  "specs": string | null,\n'
+            '  "description": string\n'
+            "}\n"
+            "If unknown, set fields to null. Do not include markdown or extra text."
         )
 
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="gpt-4o-mini",
+            response_format={"type": "json_object"},
             messages=[
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": "Extract product info from this image."},
                         {"type": "image_url", "image_url": {"url": image_url}},
                     ],
-                }
+                },
             ],
-            max_tokens=500,
-            temperature=0.7,
+            max_tokens=600,
+            temperature=0.2,
         )
 
-        description = response.choices[0].message.content.strip()
+        raw = resp.choices[0].message.content or "{}"
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
 
         return jsonify({
-            "name": None,        # leave blank for now (editable later)
-            "category": None,
-            "sku": None,
-            "specs": None,
-            "description": description,
+            "name": parsed.get("name"),
+            "category": parsed.get("category"),
+            "sku": parsed.get("sku"),
+            "specs": parsed.get("specs"),
+            "description": parsed.get("description"),
             "price": price,
             "inventory": inventory
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
