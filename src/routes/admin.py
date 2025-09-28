@@ -8,6 +8,7 @@ import boto3
 from botocore.config import Config
 from datetime import datetime
 from urllib.parse import urlparse
+import traceback
 
 # ------------------------------------------------------------------------------
 # Blueprint
@@ -63,8 +64,9 @@ def _ensure_products_table():
         db.session.execute(text(sql))
         db.session.commit()
     except Exception as e:
-        # Print full DB error in Railway logs and raise for route to catch
+        # Print full DB error in Railway logs
         print("DB ERROR in _ensure_products_table:", str(e))
+        traceback.print_exc()
         raise
 
 def _insert_product(p: Dict[str, Any]) -> int:
@@ -118,6 +120,7 @@ def presign_image():
             "key": key
         })
     except Exception as e:
+        traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
 @admin_bp.post("/products")
@@ -132,8 +135,10 @@ def create_product():
         return jsonify({"id": new_id}), 201
     except SQLAlchemyError as e:
         current_app.extensions["sqlalchemy"].db.session.rollback()
+        traceback.print_exc()
         return jsonify(error=type(e).__name__, message=str(e)), 500
     except Exception as e:
+        traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
 @admin_bp.get("/products")
@@ -147,6 +152,7 @@ def list_products_admin():
         ).mappings().all()
         return jsonify([dict(r) for r in rows])
     except Exception as e:
+        traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
 # Public catalog route
@@ -161,4 +167,5 @@ def list_products_public():
         ).mappings().all()
         return jsonify([dict(r) for r in rows])
     except Exception as e:
+        traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
