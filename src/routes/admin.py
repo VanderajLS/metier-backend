@@ -9,6 +9,7 @@ from werkzeug.utils import secure_filename
 import boto3
 from botocore.config import Config
 from datetime import datetime
+from urllib.parse import urlparse
 
 # ------------------------------------------------------------------------------
 # Blueprint
@@ -16,7 +17,7 @@ from datetime import datetime
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
 # ------------------------------------------------------------------------------
-# R2 helpers (accept both R2_BUCKET_NAME and R2_BUCKET for compatibility)
+# R2 helpers
 # ------------------------------------------------------------------------------
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET")
 R2_ENDPOINT = os.getenv("R2_ENDPOINT", "").rstrip("/")
@@ -29,8 +30,25 @@ s3 = boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-    config=Config(signature_version="s3v4")  # Force SigV4 for R2
+    config=Config(signature_version="s3v4")  # Force SigV4
 )
+
+def _normalize_public_base(base: str, key: str) -> str:
+    """
+    Ensure public URL base doesn't include bucket name or duplicate slashes.
+    """
+    if not base:
+        return None
+    parsed = urlparse(base)
+    clean_path = parsed.path.strip("/")
+    # If path contains the bucket name, drop it (Cloudflare R2 pub URLs don't include it)
+    if clean_path == R2_BUCKET_NAME:
+        clean_path = ""
+    # Rebuild URL
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    if clean_path:
+        root = f"{root}/{clean_path}"
+    return f"{root}/{key}"
 
 # ------------------------------------------------------------------------------
 # DB helpers
@@ -94,7 +112,7 @@ def presign_image():
             ExpiresIn=3600,
         )
 
-        public_url = f"{R2_PUBLIC_BASE}/{key}" if R2_PUBLIC_BASE else None
+        public_url = _normalize_public_base(R2_PUBLIC_BASE, key)
 
         return jsonify({
             "upload_url": presigned_url,
