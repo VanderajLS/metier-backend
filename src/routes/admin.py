@@ -41,10 +41,8 @@ def _normalize_public_base(base: str, key: str) -> str:
         return None
     parsed = urlparse(base)
     clean_path = parsed.path.strip("/")
-    # If path contains the bucket name, drop it (Cloudflare R2 pub URLs don't include it)
     if clean_path == R2_BUCKET_NAME:
         clean_path = ""
-    # Rebuild URL
     root = f"{parsed.scheme}://{parsed.netloc}"
     if clean_path:
         root = f"{root}/{clean_path}"
@@ -122,12 +120,32 @@ def presign_image():
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
 
+@admin_bp.post("/products")
+def create_product():
+    """Create product from JSON; auto-generate description if missing."""
+    try:
+        data = request.get_json(force=True) or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify(error="ValidationError", message="name is required"), 400
+        new_id = _insert_product(data)
+        return jsonify({"id": new_id}), 201
+    except SQLAlchemyError as e:
+        current_app.extensions["sqlalchemy"].db.session.rollback()
+        return jsonify(error=type(e).__name__, message=str(e)), 500
+    except Exception as e:
+        return jsonify(error="ServerError", message=str(e)), 500
+
+# ✅ New: Public GET route for products
 @admin_bp.get("/products")
 def list_products():
-    """List all products"""
+    """List all products (public catalog)."""
     try:
+        _ensure_products_table()
         db = current_app.extensions["sqlalchemy"].db
-        rows = db.session.execute(text("SELECT * FROM products ORDER BY id DESC")).mappings().all()
+        rows = db.session.execute(
+            text("SELECT * FROM products ORDER BY id DESC")
+        ).mappings().all()
         return jsonify([dict(r) for r in rows])
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
