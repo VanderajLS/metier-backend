@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.utils import secure_filename
 import boto3
+from botocore.config import Config
 from datetime import datetime
 
 # ------------------------------------------------------------------------------
@@ -28,6 +29,7 @@ s3 = boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+    config=Config(signature_version="s3v4")  # 👈 Force SigV4
 )
 
 # ------------------------------------------------------------------------------
