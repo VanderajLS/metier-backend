@@ -3,7 +3,7 @@ from flask import Flask, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 
-# Initialize Flask
+# Initialize Flask 
 app = Flask(__name__)
 CORS(app)
 
