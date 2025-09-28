@@ -64,7 +64,6 @@ def _ensure_products_table():
         db.session.execute(text(sql))
         db.session.commit()
     except Exception as e:
-        # Print full DB error in Railway logs
         print("DB ERROR in _ensure_products_table:", str(e))
         traceback.print_exc()
         raise
