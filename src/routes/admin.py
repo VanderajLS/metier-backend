@@ -97,6 +97,7 @@ def _insert_product(p: Dict[str, Any]) -> int:
 def ping():
     return jsonify(ok=True, where="admin")
 
+# --- Image Presign ---
 @admin_bp.post("/images/presign")
 def presign_image():
     try:
@@ -124,6 +125,7 @@ def presign_image():
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
+# --- Create Product ---
 @admin_bp.post("/products")
 def create_product():
     try:
@@ -138,6 +140,7 @@ def create_product():
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
+# --- List Products (admin) ---
 @admin_bp.get("/products")
 def list_products_admin():
     _ensure_products_table()
@@ -149,6 +152,7 @@ def list_products_admin():
         results.append(item)
     return jsonify(results)
 
+# --- Public Catalog ---
 @admin_bp.get("/public")
 def list_products_public():
     _ensure_products_table()
@@ -160,9 +164,12 @@ def list_products_public():
         results.append(item)
     return jsonify(results)
 
+# --- AI Description with Prompt Engineering ---
 @admin_bp.post("/ai/describe")
 def ai_describe():
-    """Use OpenAI Vision to extract structured product info + description."""
+    """
+    Use OpenAI Vision to extract structured product info and generate robust, formatted specs + description.
+    """
     try:
         data = request.get_json(force=True) or {}
         image_url = data.get("image_url")
@@ -173,16 +180,24 @@ def ai_describe():
             return jsonify(error="ValidationError", message="image_url is required"), 400
 
         system_prompt = (
-            "You analyze a product description/spec image and return ONLY valid JSON.\n"
-            "Schema:\n"
+            "You are a product data extractor and copywriter for an automotive parts catalog.\n"
+            "Analyze a product description/spec image and return ONLY valid JSON in this schema:\n\n"
             "{\n"
-            '  "name": string | null,\n'
-            '  "category": string | null,\n'
-            '  "sku": string | null,\n'
-            '  "specs": string | null,\n'
-            '  "description": string\n'
-            "}\n"
-            "If unknown, set fields to null. Do not include markdown or extra text."
+            '  "name": string,\n'
+            '  "category": string,\n'
+            '  "sku": string,\n'
+            '  "specs": string (markdown bullet list, at least 4 bullets, each with a **bold label**),\n'
+            '  "description": string (markdown, at least 2 paragraphs, professional tone, identifiers like SKU/part numbers/years in **bold**)\n'
+            "}\n\n"
+            "### Example Output:\n"
+            "{\n"
+            '  "name": "Polaris RZR 0.9L Turbocharger",\n'
+            '  "category": "Turbochargers",\n'
+            '  "sku": "MP120568",\n'
+            '  "specs": "- **Turbo Model:** K03\\n- **OEM / Cross Reference:** 1205689, 3022792, 3023297\\n- **Application:** Polaris RZR XP 0.9L (2016–2021)\\n- **Component Type:** Complete Turbocharger Assembly",\n'
+            '  "description": "This replacement turbocharger is engineered for the **Polaris RZR XP 0.9L (2016–2021)**. Built around the proven **K03 turbine design**, it matches OEM specifications for fit and performance.\\n\\nDesigned for durability in demanding off-road environments, this turbo delivers reliable boost and restores lost performance. With cross-reference part numbers **1205689, 3022792, and 3023297**, it’s a direct-fit solution that ensures your RZR runs at peak power."\n'
+            "}\n\n"
+            "Always follow this style exactly. Never include extra text or commentary."
         )
 
         resp = client.chat.completions.create(
@@ -193,13 +208,13 @@ def ai_describe():
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extract product info from this image."},
+                        {"type": "text", "text": "Extract fields and generate specs + description for this product image."},
                         {"type": "image_url", "image_url": {"url": image_url}},
                     ],
                 },
             ],
-            max_tokens=600,
-            temperature=0.2,
+            max_tokens=800,
+            temperature=0.4,
         )
 
         raw = resp.choices[0].message.content or "{}"
@@ -214,6 +229,7 @@ def ai_describe():
             "price": price,
             "inventory": inventory
         })
+
     except Exception as e:
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
