@@ -136,10 +136,10 @@ def list_products_admin():
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
 
-# ✅ Public route for Products page
-@current_app.route("/api/products", methods=["GET"])
+# ✅ Public catalog route
+@admin_bp.get("/public")
 def list_products_public():
-    """Public list of products for catalog page."""
+    """Public list of products for /api/products"""
     try:
         _ensure_products_table()
         db = current_app.extensions["sqlalchemy"].db
