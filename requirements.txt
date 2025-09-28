@@ -12,15 +12,15 @@ Werkzeug==3.1.3
 greenlet==3.2.4
 openai>=1.35.0
 
-# Add production server
+# Production server
 gunicorn==21.2.0
 
 # Database support
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.9   # ✅ fixed for Python 3.13 compatibility
 
 # Cloudflare R2 (S3-compatible)
 boto3==1.35.2
 botocore==1.35.2
 
-# Env file loader (optional, but recommended)
+# Env file loader
 python-dotenv==1.0.1
