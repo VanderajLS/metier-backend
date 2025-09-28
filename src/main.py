@@ -11,8 +11,12 @@ CORS(app)
 # Database config (Postgres + SQLite fallback)
 # -------------------------------
 if os.environ.get("DATABASE_URL"):
-    # Railway often uses postgres://, SQLAlchemy with psycopg v3 expects postgresql+psycopg://
-    db_url = os.environ["DATABASE_URL"].replace("postgres://", "postgresql+psycopg://")
+    db_url = os.environ["DATABASE_URL"]
+
+    # Ensure SQLAlchemy uses psycopg v3 instead of psycopg2
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://")
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://")
+
     app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 else:
     # Local fallback
