@@ -12,11 +12,14 @@ import traceback
 
 # Import db from main.py
 from src.main import db
+from openai import OpenAI
 
 # ------------------------------------------------------------------------------
-# Blueprint
+# Setup
 # ------------------------------------------------------------------------------
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
+
+client = OpenAI()
 
 # ------------------------------------------------------------------------------
 # R2 helpers
@@ -55,12 +58,14 @@ def _ensure_products_table():
         sql = """
         CREATE TABLE IF NOT EXISTS products (
           id SERIAL PRIMARY KEY,
-          name TEXT NOT NULL,
+          name TEXT,
           sku TEXT,
           category TEXT,
           price REAL DEFAULT 0,
+          inventory INT DEFAULT 0,
           image_url TEXT,
-          description TEXT
+          description TEXT,
+          product_images TEXT
         );
         """
         db.session.execute(text(sql))
@@ -73,16 +78,19 @@ def _ensure_products_table():
 def _insert_product(p: Dict[str, Any]) -> int:
     _ensure_products_table()
     ins = text("""
-      INSERT INTO products (name, sku, category, price, image_url, description)
-      VALUES (:name, :sku, :category, :price, :image_url, :description)
+      INSERT INTO products (name, sku, category, price, inventory, image_url, description, product_images)
+      VALUES (:name, :sku, :category, :price, :inventory, :image_url, :description, :product_images)
     """)
     db.session.execute(ins, {
-        "name": p.get("name", "").strip(),
+        "name": (p.get("name") or "").strip(),
         "sku": (p.get("sku") or "").strip(),
         "category": (p.get("category") or "").strip(),
         "price": float(p.get("price") or 0),
+        "inventory": int(p.get("inventory") or 0),
         "image_url": (p.get("image_url") or "").strip(),
         "description": (p.get("description") or "").strip(),
+        # store list of product_images as comma-separated string
+        "product_images": ",".join(p.get("product_images", []))
     })
     db.session.commit()
     row_id = db.session.execute(text("SELECT lastval()")).scalar_one()
@@ -95,6 +103,7 @@ def _insert_product(p: Dict[str, Any]) -> int:
 def ping():
     return jsonify(ok=True, where="admin")
 
+# --- Image Presign ---
 @admin_bp.post("/images/presign")
 def presign_image():
     """Generate a presigned PUT URL for uploading directly to R2."""
@@ -123,14 +132,12 @@ def presign_image():
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
+# --- Create Product ---
 @admin_bp.post("/products")
 def create_product():
     """Create product from JSON."""
     try:
         data = request.get_json(force=True) or {}
-        name = (data.get("name") or "").strip()
-        if not name:
-            return jsonify(error="ValidationError", message="name is required"), 400
         new_id = _insert_product(data)
         return jsonify({"id": new_id}), 201
     except SQLAlchemyError as e:
@@ -141,29 +148,95 @@ def create_product():
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
+# --- List Products (admin) ---
 @admin_bp.get("/products")
 def list_products_admin():
-    """List products (admin route)."""
     try:
         _ensure_products_table()
         rows = db.session.execute(
             text("SELECT * FROM products ORDER BY id DESC")
         ).mappings().all()
-        return jsonify([dict(r) for r in rows])
+        # expand product_images string into list
+        results = []
+        for r in rows:
+            item = dict(r)
+            if item.get("product_images"):
+                item["product_images"] = item["product_images"].split(",")
+            else:
+                item["product_images"] = []
+            results.append(item)
+        return jsonify(results)
     except Exception as e:
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
 
-# Public catalog route
+# --- Public Catalog ---
 @admin_bp.get("/public")
 def list_products_public():
-    """Public list of products for catalog page."""
     try:
         _ensure_products_table()
         rows = db.session.execute(
             text("SELECT * FROM products ORDER BY id DESC")
         ).mappings().all()
-        return jsonify([dict(r) for r in rows])
+        results = []
+        for r in rows:
+            item = dict(r)
+            if item.get("product_images"):
+                item["product_images"] = item["product_images"].split(",")
+            else:
+                item["product_images"] = []
+            results.append(item)
+        return jsonify(results)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify(error="ServerError", message=str(e)), 500
+
+# --- AI Description ---
+@admin_bp.post("/ai/describe")
+def ai_describe():
+    """Use OpenAI Vision to extract product info and generate description."""
+    try:
+        data = request.get_json(force=True) or {}
+        image_url = data.get("image_url")
+        price = data.get("price", "")
+        inventory = data.get("inventory", "")
+
+        if not image_url:
+            return jsonify(error="ValidationError", message="image_url is required"), 400
+
+        prompt = (
+            "You are analyzing a product description image. "
+            "Extract the following if available: product name, category, SKU, and specifications. "
+            "Then write a short, professional marketing description suitable for an e-commerce site."
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }
+            ],
+            max_tokens=500,
+            temperature=0.7,
+        )
+
+        description = response.choices[0].message.content.strip()
+
+        return jsonify({
+            "name": None,        # leave blank for now (editable later)
+            "category": None,
+            "sku": None,
+            "specs": None,
+            "description": description,
+            "price": price,
+            "inventory": inventory
+        })
+
     except Exception as e:
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
