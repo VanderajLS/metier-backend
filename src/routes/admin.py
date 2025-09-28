@@ -12,7 +12,6 @@ from datetime import datetime
 # ------------------------------------------------------------------------------
 # Blueprint
 # ------------------------------------------------------------------------------
-# FIX: __name__ added as the second required argument
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
 # ------------------------------------------------------------------------------
@@ -78,7 +77,7 @@ def ping():
 
 @admin_bp.post("/images/presign")
 def presign_image():
-    """Generate a presigned URL for uploading directly to R2."""
+    """Generate a presigned PUT URL for uploading directly to R2."""
     try:
         data = request.get_json(force=True) or {}
         file_name = data.get("fileName")
@@ -87,19 +86,18 @@ def presign_image():
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
         key = f"{folder}/{timestamp}_{file_name}" if folder else f"{timestamp}_{file_name}"
 
-        presigned = s3.generate_presigned_post(
-            Bucket=R2_BUCKET_NAME,
-            Key=key,
-            Fields={"Content-Type": content_type},
-            Conditions=[{"Content-Type": content_type}],
+        presigned_url = s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": R2_BUCKET_NAME, "Key": key, "ContentType": content_type},
             ExpiresIn=3600,
         )
+
         public_url = f"{R2_PUBLIC_BASE}/{key}" if R2_PUBLIC_BASE else None
 
         return jsonify({
-            "url": presigned["url"],
-            "fields": presigned["fields"],
-            "public_url": public_url
+            "upload_url": presigned_url,
+            "public_url": public_url,
+            "key": key
         })
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
