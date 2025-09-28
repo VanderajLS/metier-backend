@@ -121,3 +121,13 @@ def presign_image():
         })
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
+
+@admin_bp.get("/products")
+def list_products():
+    """List all products"""
+    try:
+        db = current_app.extensions["sqlalchemy"].db
+        rows = db.session.execute(text("SELECT * FROM products ORDER BY id DESC")).mappings().all()
+        return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        return jsonify(error="ServerError", message=str(e)), 500
