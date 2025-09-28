@@ -16,7 +16,7 @@ openai>=1.35.0
 gunicorn==21.2.0
 
 # Database support (Postgres, Python 3.13 compatible)
-psycopg[binary,pool]==3.2.1
+psycopg[binary,pool]==3.2.10
 
 # Cloudflare R2 (S3-compatible)
 boto3==1.35.2
