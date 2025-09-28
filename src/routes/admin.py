@@ -1,4 +1,3 @@
-# src/routes/admin.py
 from __future__ import annotations
 import os
 from typing import Dict, Any
@@ -10,9 +9,14 @@ from botocore.config import Config
 from datetime import datetime
 from urllib.parse import urlparse
 
+# ------------------------------------------------------------------------------
+# Blueprint
+# ------------------------------------------------------------------------------
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
-# --- R2 config ---
+# ------------------------------------------------------------------------------
+# R2 helpers
+# ------------------------------------------------------------------------------
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME") or os.getenv("R2_BUCKET")
 R2_ENDPOINT = os.getenv("R2_ENDPOINT", "").rstrip("/")
 R2_PUBLIC_BASE = os.getenv("R2_PUBLIC_BASE", "").rstrip("/")
@@ -24,7 +28,7 @@ s3 = boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-    config=Config(signature_version="s3v4")
+    config=Config(signature_version="s3v4")  # Force SigV4
 )
 
 def _normalize_public_base(base: str, key: str) -> str:
@@ -39,22 +43,29 @@ def _normalize_public_base(base: str, key: str) -> str:
         root = f"{root}/{clean_path}"
     return f"{root}/{key}"
 
-# --- DB helpers ---
+# ------------------------------------------------------------------------------
+# DB helpers
+# ------------------------------------------------------------------------------
 def _ensure_products_table():
-    sql = """
-    CREATE TABLE IF NOT EXISTS products (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      sku TEXT,
-      category TEXT,
-      price REAL DEFAULT 0,
-      image_url TEXT,
-      description TEXT
-    );
-    """
-    db = current_app.extensions["sqlalchemy"].db
-    db.session.execute(text(sql))
-    db.session.commit()
+    try:
+        sql = """
+        CREATE TABLE IF NOT EXISTS products (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          sku TEXT,
+          category TEXT,
+          price REAL DEFAULT 0,
+          image_url TEXT,
+          description TEXT
+        );
+        """
+        db = current_app.extensions["sqlalchemy"].db
+        db.session.execute(text(sql))
+        db.session.commit()
+    except Exception as e:
+        # Print full DB error in Railway logs and raise for route to catch
+        print("DB ERROR in _ensure_products_table:", str(e))
+        raise
 
 def _insert_product(p: Dict[str, Any]) -> int:
     _ensure_products_table()
@@ -72,10 +83,12 @@ def _insert_product(p: Dict[str, Any]) -> int:
         "description": (p.get("description") or "").strip(),
     })
     db.session.commit()
-    row_id = db.session.execute(text("SELECT last_insert_rowid()")).scalar_one()
+    row_id = db.session.execute(text("SELECT lastval()")).scalar_one()
     return int(row_id)
 
-# --- Routes ---
+# ------------------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------------------
 @admin_bp.route("/ping")
 def ping():
     return jsonify(ok=True, where="admin")
@@ -136,10 +149,10 @@ def list_products_admin():
     except Exception as e:
         return jsonify(error="ServerError", message=str(e)), 500
 
-# ✅ Public catalog route
+# Public catalog route
 @admin_bp.get("/public")
 def list_products_public():
-    """Public list of products for /api/products"""
+    """Public list of products for catalog page."""
     try:
         _ensure_products_table()
         db = current_app.extensions["sqlalchemy"].db
