@@ -5,13 +5,13 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import boto3
+from botocore.config import Config  # Fixed import for Config
 import traceback
 import src.main as db
 from datetime import datetime
 import urllib.parse
 import openai
 import json
-import re
 
 # Setup
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
@@ -31,7 +31,7 @@ s3 = boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-    config=boto3.Config(signature_version="s3v4")
+    config=Config(signature_version="s3v4")  # Fixed Config usage
 )
 
 def _normalize_public_base(base: str, key: str) -> str:
@@ -231,124 +231,3 @@ def ai_describe():
     except Exception as e:
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
-
-# --- AI Feedback for Product Details ---
-@admin_bp.post("/ai/feedback")
-def ai_feedback():
-    """
-    Endpoint for AI feedback on product details
-    Allows admin to ask questions and get suggestions for product details
-    """
-    try:
-        data = request.get_json(force=True) or {}
-        
-        # Extract product details and question
-        product_name = data.get("product_name", "")
-        product_description = data.get("product_description", "")
-        product_specs = data.get("product_specs", "")
-        product_category = data.get("product_category", "")
-        product_sku = data.get("product_sku", "")
-        question = data.get("question", "")
-        image_url = data.get("image_url", "")
-        
-        # Create system prompt for OpenAI
-        system_prompt = """
-        You are a helpful AI assistant for Metier Parts, an automotive parts e-commerce platform.
-        Your role is to help admin users improve product listings by answering questions and suggesting improvements.
-        
-        Focus only on the specific product details provided. Be concise but thorough in your responses.
-        If the admin asks for changes to product details, suggest specific improvements and provide them in a structured format.
-        
-        When suggesting changes, format your response to clearly indicate what fields should be updated.
-        If you recommend changes to any fields, include a section at the end of your response with:
-        
-        SUGGESTED CHANGES:
-        Name: [improved name]
-        Category: [improved category]
-        SKU: [improved SKU]
-        Description: [improved description]
-        Specifications: [improved specs]
-        
-        Only include fields that you recommend changing.
-        """
-        
-        # Create user message with context
-        user_message = f"""
-        I'm working on a product listing with the following details:
-        
-        Name: {product_name}
-        Category: {product_category}
-        SKU: {product_sku}
-        
-        Description:
-        {product_description}
-        
-        Specifications:
-        {product_specs}
-        
-        My question or feedback is: {question}
-        """
-        
-        # Add image context if available
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ]
-        
-        if image_url:
-            messages[1]["content"] = [
-                {"type": "text", "text": user_message},
-                {"type": "image_url", "image_url": {"url": image_url}}
-            ]
-        
-        # Call OpenAI API
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=1000
-        )
-        
-        ai_response = response.choices[0].message.content
-        
-        # Check if the response contains suggested changes
-        suggested_changes = {}
-        
-        # Simple parsing for suggested changes
-        if "SUGGESTED CHANGES:" in ai_response:
-            changes_section = ai_response.split("SUGGESTED CHANGES:")[1].strip()
-            
-            # Look for field changes
-            if "Name:" in changes_section:
-                name_match = re.search(r"Name:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
-                if name_match:
-                    suggested_changes["name"] = name_match.group(1).strip()
-            
-            if "Category:" in changes_section:
-                category_match = re.search(r"Category:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
-                if category_match:
-                    suggested_changes["category"] = category_match.group(1).strip()
-            
-            if "SKU:" in changes_section:
-                sku_match = re.search(r"SKU:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
-                if sku_match:
-                    suggested_changes["sku"] = sku_match.group(1).strip()
-            
-            if "Description:" in changes_section:
-                desc_match = re.search(r"Description:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
-                if desc_match:
-                    suggested_changes["description"] = desc_match.group(1).strip()
-            
-            if "Specifications:" in changes_section:
-                specs_match = re.search(r"Specifications:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
-                if specs_match:
-                    suggested_changes["specs"] = specs_match.group(1).strip()
-        
-        return jsonify({
-            "response": ai_response,
-            "suggested_changes": suggested_changes if suggested_changes else None
-        })
-    
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
