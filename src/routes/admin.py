@@ -5,19 +5,17 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import boto3
-from botocore.config import Config
-from datetime import datetime
-from urllib.parse import urlparse
 import traceback
-from src.main import db
-from openai import OpenAI
+import src.main as db
+from datetime import datetime
+import urllib.parse
+import openai
 import json
+import re
 
-# ------------------------------------------------------------------------------
 # Setup
-# ------------------------------------------------------------------------------
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
-client = OpenAI()
+client = openai.OpenAI()
 
 # ------------------------------------------------------------------------------
 # R2 helpers
@@ -33,19 +31,24 @@ s3 = boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-    config=Config(signature_version="s3v4")
+    config=boto3.Config(signature_version="s3v4")
 )
 
 def _normalize_public_base(base: str, key: str) -> str:
     if not base:
         return None
-    parsed = urlparse(base)
+    
+    parsed = urllib.parse(base)
     clean_path = parsed.path.strip("/")
+    
     if clean_path == R2_BUCKET_NAME:
         clean_path = ""
+    
     root = f"{parsed.scheme}://{parsed.netloc}"
+    
     if clean_path:
         root = f"{root}/{clean_path}"
+    
     return f"{root}/{key}"
 
 # ------------------------------------------------------------------------------
@@ -54,17 +57,17 @@ def _normalize_public_base(base: str, key: str) -> str:
 def _ensure_products_table():
     sql = """
     CREATE TABLE IF NOT EXISTS products (
-      id SERIAL PRIMARY KEY,
-      name TEXT,
-      sku TEXT,
-      category TEXT,
-      price REAL DEFAULT 0,
-      discount_price REAL DEFAULT NULL,
-      inventory INT DEFAULT 0,
-      image_url TEXT,
-      description TEXT,
-      product_images TEXT,
-      specs TEXT
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        sku TEXT,
+        category TEXT,
+        price REAL DEFAULT 0,
+        discount_price REAL DEFAULT NULL,
+        inventory INT DEFAULT 0,
+        image_url TEXT,
+        description TEXT,
+        product_images TEXT,
+        specs TEXT
     );
     """
     db.session.execute(text(sql))
@@ -73,9 +76,10 @@ def _ensure_products_table():
 def _insert_product(p: Dict[str, Any]) -> int:
     _ensure_products_table()
     ins = text("""
-      INSERT INTO products (name, sku, category, price, discount_price, inventory, image_url, description, product_images, specs)
-      VALUES (:name, :sku, :category, :price, :discount_price, :inventory, :image_url, :description, :product_images, :specs)
+    INSERT INTO products (name, sku, category, price, discount_price, inventory, image_url, description, product_images, specs)
+    VALUES (:name, :sku, :category, :price, :discount_price, :inventory, :image_url, :description, :product_images, :specs)
     """)
+    
     db.session.execute(ins, {
         "name": (p.get("name") or "").strip(),
         "sku": (p.get("sku") or "").strip(),
@@ -88,6 +92,7 @@ def _insert_product(p: Dict[str, Any]) -> int:
         "product_images": ",".join(p.get("product_images", [])),
         "specs": (p.get("specs") or "").strip(),
     })
+    
     db.session.commit()
     row_id = db.session.execute(text("SELECT lastval()")).scalar_one()
     return int(row_id)
@@ -106,18 +111,19 @@ def presign_image():
         data = request.get_json(force=True) or {}
         file_name = data.get("fileName")
         content_type = data.get("contentType", "application/octet-stream")
-        folder = data.get("folder", "").strip()
+        folder = data.get("folder", "")
+        
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        key = f"{folder}/{timestamp}_{file_name}" if folder else f"{timestamp}_{file_name}"
-
+        key = f"{folder}/{timestamp}_{file_name}".strip("/")
+        
         presigned_url = s3.generate_presigned_url(
             "put_object",
             Params={"Bucket": R2_BUCKET_NAME, "Key": key, "ContentType": content_type},
             ExpiresIn=3600,
         )
-
+        
         public_url = _normalize_public_base(R2_PUBLIC_BASE, key)
-
+        
         return jsonify({
             "upload_url": presigned_url,
             "public_url": public_url,
@@ -177,22 +183,22 @@ def ai_describe():
         image_url = data.get("image_url")
         price = data.get("price", "")
         inventory = data.get("inventory", "")
-
+        
         if not image_url:
             return jsonify(error="ValidationError", message="image_url is required"), 400
-
+        
         system_prompt = (
             "You are a product data extractor and copywriter for an automotive parts catalog.\n"
             "Analyze a product description/spec image and return ONLY valid JSON in this schema:\n\n"
             "{\n"
-            '  "name": string,\n'
-            '  "category": string,\n'
-            '  "sku": string,\n'
-            '  "specs": string (markdown bullet list, bold labels),\n'
-            '  "description": string (markdown, 2+ paragraphs, professional tone, identifiers bold)\n'
+            '    "name": string,\n'
+            '    "category": string,\n'
+            '    "sku": string,\n'
+            '    "specs": string (markdown bullet list, bold labels),\n'
+            '    "description": string (markdown, 2+ paragraphs, professional tone, identifiers bold)\n'
             "}"
         )
-
+        
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
@@ -201,7 +207,7 @@ def ai_describe():
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extract fields and generate specs + description for this product image."},
+                        {"type": "text", "text": "Extract fields and generate specs + description for this product:"},
                         {"type": "image_url", "image_url": {"url": image_url}},
                     ],
                 },
@@ -209,10 +215,10 @@ def ai_describe():
             max_tokens=800,
             temperature=0.4,
         )
-
+        
         raw = resp.choices[0].message.content or "{}"
         parsed = json.loads(raw) if isinstance(raw, str) else raw
-
+        
         return jsonify({
             "name": parsed.get("name"),
             "category": parsed.get("category"),
@@ -222,7 +228,127 @@ def ai_describe():
             "price": price,
             "inventory": inventory
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify(error="ServerError", message=str(e)), 500
+
+# --- AI Feedback for Product Details ---
+@admin_bp.post("/ai/feedback")
+def ai_feedback():
+    """
+    Endpoint for AI feedback on product details
+    Allows admin to ask questions and get suggestions for product details
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        
+        # Extract product details and question
+        product_name = data.get("product_name", "")
+        product_description = data.get("product_description", "")
+        product_specs = data.get("product_specs", "")
+        product_category = data.get("product_category", "")
+        product_sku = data.get("product_sku", "")
+        question = data.get("question", "")
+        image_url = data.get("image_url", "")
+        
+        # Create system prompt for OpenAI
+        system_prompt = """
+        You are a helpful AI assistant for Metier Parts, an automotive parts e-commerce platform.
+        Your role is to help admin users improve product listings by answering questions and suggesting improvements.
+        
+        Focus only on the specific product details provided. Be concise but thorough in your responses.
+        If the admin asks for changes to product details, suggest specific improvements and provide them in a structured format.
+        
+        When suggesting changes, format your response to clearly indicate what fields should be updated.
+        If you recommend changes to any fields, include a section at the end of your response with:
+        
+        SUGGESTED CHANGES:
+        Name: [improved name]
+        Category: [improved category]
+        SKU: [improved SKU]
+        Description: [improved description]
+        Specifications: [improved specs]
+        
+        Only include fields that you recommend changing.
+        """
+        
+        # Create user message with context
+        user_message = f"""
+        I'm working on a product listing with the following details:
+        
+        Name: {product_name}
+        Category: {product_category}
+        SKU: {product_sku}
+        
+        Description:
+        {product_description}
+        
+        Specifications:
+        {product_specs}
+        
+        My question or feedback is: {question}
+        """
+        
+        # Add image context if available
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+        
+        if image_url:
+            messages[1]["content"] = [
+                {"type": "text", "text": user_message},
+                {"type": "image_url", "image_url": {"url": image_url}}
+            ]
+        
+        # Call OpenAI API
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1000
+        )
+        
+        ai_response = response.choices[0].message.content
+        
+        # Check if the response contains suggested changes
+        suggested_changes = {}
+        
+        # Simple parsing for suggested changes
+        if "SUGGESTED CHANGES:" in ai_response:
+            changes_section = ai_response.split("SUGGESTED CHANGES:")[1].strip()
+            
+            # Look for field changes
+            if "Name:" in changes_section:
+                name_match = re.search(r"Name:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
+                if name_match:
+                    suggested_changes["name"] = name_match.group(1).strip()
+            
+            if "Category:" in changes_section:
+                category_match = re.search(r"Category:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
+                if category_match:
+                    suggested_changes["category"] = category_match.group(1).strip()
+            
+            if "SKU:" in changes_section:
+                sku_match = re.search(r"SKU:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
+                if sku_match:
+                    suggested_changes["sku"] = sku_match.group(1).strip()
+            
+            if "Description:" in changes_section:
+                desc_match = re.search(r"Description:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
+                if desc_match:
+                    suggested_changes["description"] = desc_match.group(1).strip()
+            
+            if "Specifications:" in changes_section:
+                specs_match = re.search(r"Specifications:(.*?)(?:\n\w+:|$)", changes_section, re.DOTALL)
+                if specs_match:
+                    suggested_changes["specs"] = specs_match.group(1).strip()
+        
+        return jsonify({
+            "response": ai_response,
+            "suggested_changes": suggested_changes if suggested_changes else None
+        })
+    
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
